@@ -1,107 +1,58 @@
-
-import sys
-from pathlib import Path
-import io
 import numpy as np
-import rarfile
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVC
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
 
-from preprocessing import dc_remove, bandpass_hamming_1d, clutter_remove
+
+#  Load features and labels
+
+X = np.load(r"/Radar-based-People-Counting-Using-ML-Capstone-Project-/feature extraction\X_features.npy")
+y = np.load(r"/preprocessing/y.npy")
+
+print("Feature matrix shape:", X.shape)
+print("Labels shape:", y.shape)
 
 
-def parse_text_to_array(text: str) -> np.ndarray:
-    """
-    Convert text (CSV or whitespace-separated numbers) to a 2D NumPy array.
-    - Tries comma-separated first, then whitespace.
-    """
-    bio = io.StringIO(text)
-    try:
-        arr = np.loadtxt(bio, delimiter=",")
-    except Exception:
-        bio.seek(0)
-        arr = np.loadtxt(bio)  # whitespace fallback
-    if arr.ndim == 1:
-        arr = arr.reshape(1, -1)
-    return arr.astype(np.float32)
+# Split dataset
 
-def extract_label_from_path(entry_name: str) -> int:
-    """
-    Given an archive entry path like '3/sample_0001.txt' or '7/abc/xyz.csv',
-    return the first folder name that is purely digits as the label.
-    """
-    # Normalize separators to '/' and split
-    parts = entry_name.replace("\\", "/").split("/")
-    # Scan folders for a purely-numeric component
-    for p in parts:
-        if p.isdigit():
-            return int(p)
-    raise ValueError(f"Could not infer label from path: {entry_name}")
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.2, random_state=42, stratify=y
+)
 
-# ---------- main ----------
+print("Train shape:", X_train.shape, y_train.shape)
+print("Test shape:", X_test.shape, y_test.shape)
 
-def main():
-    files_dir = Path.cwd() / "files"
-    if not files_dir.is_dir():
-        print(f"Directory not found: {files_dir}")
-        sys.exit(1)
 
-    rar_files = list(files_dir.glob("*.rar"))
-    if not rar_files:
-        print("No .rar files found.")
-        sys.exit(0)
+# Train baseline SVM
 
-    all_processed = []  # List[np.ndarray], each (200, 1280) (or 2D matrix)
-    all_labels = []     # List[int], derived from folder names (0..10)
+clf = SVC(kernel='rbf', C=10, gamma='scale')
+clf.fit(X_train, y_train)
 
-    for rar_path in rar_files:
-        print(f"\n=== Processing RAR: {rar_path.name} ===")
-        with rarfile.RarFile(rar_path) as rf:
-            for info in rf.infolist():
-                # Skip directories
-                if info.is_dir():
-                    continue
 
-                # Infer label from the entry path (e.g., '7/xxx.txt' -> label 7)
-                try:
-                    label = extract_label_from_path(info.filename)
-                except Exception as e:
-                    # If the entry doesn't live under a numeric folder, skip it
-                    continue
+#  Evaluate accuracy
 
-                # Read entry bytes
-                data = rf.read(info)
+# Training accuracy
+y_train_pred = clf.predict(X_train)
+train_acc = accuracy_score(y_train, y_train_pred)
+print("Training accuracy:", train_acc)
 
-                # Decode as text (CSV/whitespace numbers). If not text, skip.
-                try:
-                    text = data.decode('utf-8')
-                except UnicodeDecodeError:
-                    continue
+# Testing accuracy
+y_test_pred = clf.predict(X_test)
+test_acc = accuracy_score(y_test, y_test_pred)
+print("Testing accuracy:", test_acc)
 
-                # Parse to numeric 2D array
-                try:
-                    arr = parse_text_to_array(text)
-                except Exception as e:
-                    print(f"[skip] {info.filename}: cannot parse numeric data ({e})")
-                    continue
 
-                # ---------- preprocessing pipeline ----------
-                arr = dc_remove(arr)
-                arr = bandpass_hamming_1d(arr, axis=1, cutoff_bins=(5, 750))
-                arr = clutter_remove(arr, alpha=0.6)
+#  evaluation
 
-                # save data
-                all_processed.append(arr)
-                all_labels.append(label)
+print("\nClassification Report (Test Set):")
+print(classification_report(y_test, y_test_pred))
 
-                print(f"Processed {info.filename} -> label {label}, shape {arr.shape}")
-
-    print(f"\nTotal processed samples: {len(all_processed)} | Total labels: {len(all_labels)}")
-    if len(all_processed) != len(all_labels):
-        print("[warning] Mismatch in samples vs labels lengths.")
-
-    # >>> Later: feed `all_processed` and `all_labels` into your CNN training <<<
-    # e.g., from train_cnn_200x1280 import run_training
-    # num_classes = len(set(all_labels))
-    # run_training(all_processed, all_labels, num_classes)
-
-if __name__ == "__main__":
-    main()
+cm = confusion_matrix(y_test, y_test_pred)
+plt.figure(figsize=(10, 8))
+sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+plt.xlabel("Predicted")
+plt.ylabel("True")
+plt.title("Confusion Matrix (Test Set)")
+plt.show()
