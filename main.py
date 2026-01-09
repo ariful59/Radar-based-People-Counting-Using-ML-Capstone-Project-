@@ -4,6 +4,7 @@ from pathlib import Path
 import io
 import numpy as np
 import rarfile
+from exceptiongroup import catch
 
 from preprocessing import dc_remove, bandpass_hamming_1d, clutter_remove
 
@@ -19,6 +20,9 @@ def parse_text_to_array(text: str) -> np.ndarray:
     except Exception:
         bio.seek(0)
         arr = np.loadtxt(bio)  # whitespace fallback
+
+
+
     if arr.ndim == 1:
         arr = arr.reshape(1, -1)
     return arr.astype(np.float32)
@@ -36,47 +40,41 @@ def extract_label_from_path(entry_name: str) -> int:
             return int(p)
     raise ValueError(f"Could not infer label from path: {entry_name}")
 
+
 # ---------- main ----------
 
-def main():
+def load_full_data():
     files_dir = Path.cwd() / "files"
     if not files_dir.is_dir():
         print(f"Directory not found: {files_dir}")
-        sys.exit(1)
+        return [], []
 
     rar_files = list(files_dir.glob("*.rar"))
     if not rar_files:
         print("No .rar files found.")
-        sys.exit(0)
+        return [], []
 
-    all_processed = []  # List[np.ndarray], each (200, 1280) (or 2D matrix)
-    all_labels = []     # List[int], derived from folder names (0..10)
+    all_processed = []  
+    all_labels = []     
 
     for rar_path in rar_files:
         print(f"\n=== Processing RAR: {rar_path.name} ===")
         with rarfile.RarFile(rar_path) as rf:
             for info in rf.infolist():
-                # Skip directories
                 if info.is_dir():
                     continue
 
-                # Infer label from the entry path (e.g., '7/xxx.txt' -> label 7)
                 try:
                     label = extract_label_from_path(info.filename)
-                except Exception as e:
-                    # If the entry doesn't live under a numeric folder, skip it
+                except Exception:
                     continue
 
-                # Read entry bytes
                 data = rf.read(info)
-
-                # Decode as text (CSV/whitespace numbers). If not text, skip.
                 try:
                     text = data.decode('utf-8')
                 except UnicodeDecodeError:
                     continue
 
-                # Parse to numeric 2D array
                 try:
                     arr = parse_text_to_array(text)
                 except Exception as e:
@@ -88,33 +86,67 @@ def main():
                 arr = bandpass_hamming_1d(arr, axis=1, cutoff_bins=(5, 750))
                 arr = clutter_remove(arr, alpha=0.6)
 
-                # save data
-                all_processed.append(arr)
-                all_labels.append(label)
+                # ---------- 2.5s windowing (50 rows) ----------
+                window_size = 50
+                for i in range(0, 200, window_size):
+                    window = arr[i:i+window_size, :]
+                    if window.shape[0] == window_size:
+                        all_processed.append(window)
+                        all_labels.append(label)
 
-                print(f"Processed {info.filename} -> label {label}, shape {arr.shape}")
+                print(f"Processed {info.filename} -> label {label}, split into {200//window_size} windows")
+    return all_processed, all_labels
 
-    print(f"\nTotal processed samples: {len(all_processed)} | Total labels: {len(all_labels)}")
+def main():
+    data_cache = Path("data_cache.npz")
+    
+    if not data_cache.exists():
+        print("Data cache not found. Processing raw files...")
+        all_processed, all_labels = load_full_data()
+        if not all_processed:
+            print("No data loaded. Exiting.")
+            return
+        # Save cache for next time
+        np.savez(data_cache, data=np.array(all_processed), labels=np.array(all_labels))
+    else:
+        print(f"Loading cached data from {data_cache}...")
+        with np.load(data_cache) as data:
+            all_processed = list(data['data'])
+            all_labels = list(data['labels'])
+
+    print(f"\nTotal samples: {len(all_processed)} | Total labels: {len(all_labels)}")
+
     if len(all_processed) != len(all_labels):
         print("[warning] Mismatch in samples vs labels lengths.")
 
+    # Choose your model here:
+    # Option A: Custom CNN
     from cnn_model import run_training
+    # Option B: Pre-trained ResNet-18
+    # from pretrained_model import run_pretrained_training as run_training
+    # Option C: Pre-trained Inception-v3 (uncomment to use)
+    # from inception_model import run_inception_training as run_training
 
-    # ... after you build all_processed and all_labels ...
-    print(f"Samples: {len(all_processed)}, Labels: {len(all_labels)}, Classes: {sorted(set(all_labels))}")
+    print(f"Classes: {sorted(set(all_labels))}")
 
-    ckpt_path = run_training(
+    # For Custom CNN (Option A):
+    from cnn_model import run_training
+    # from pretrained_model import run_pretrained_training
+    from inception_model import run_inception_training
+
+    ckpt_path = run_inception_training(
         X=all_processed,
         y=all_labels,
-        batch_size=16,  # adjust for VRAM
+        batch_size=16,
         lr=1e-3,
-        epochs=20,
+        epochs=10,
         val_split=0.2,
-        seed=42,
-        ckpt_path="radar_cnn_best.pt"
+        seed=42
     )
+    print(f"Training complete. Status: {ckpt_path}")
 
-    print(f"Training complete. Best model saved to: {ckpt_path}")
+
+
 
 
 if __name__ == "__main__":

@@ -1,3 +1,11 @@
  __pycache__/
 lightning_logs/
+data_cache.npz
+radar_cnn.pth
+radar_inception.pth
+radar_resnet.pth
+__pycache__/cnn_model.cpython-313.pyc
+__pycache__/inception_model.cpython-313.pyc
+__pycache__/preprocessing.cpython-313.pyc
+__pycache__/pretrained_model.cpython-313.pyc
 
